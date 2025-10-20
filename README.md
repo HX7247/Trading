@@ -1,1 +1,2 @@
-# Trading
+# Scalping Bot
+
