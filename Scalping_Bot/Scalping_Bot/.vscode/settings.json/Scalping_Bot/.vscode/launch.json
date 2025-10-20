@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run NASDAQ Scalping Bot",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/NASDAQ_scalping_bot.py",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/alpaca_setup.env"
+    }
+  ]
+}
