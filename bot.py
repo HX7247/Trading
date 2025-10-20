@@ -24,7 +24,8 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from dotenv import load_dotenv
-load_dotenv(dotenv_path=".env") 
+load_dotenv()  # automatically finds .env in current working directory
+
 
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
