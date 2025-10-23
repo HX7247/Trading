@@ -22,6 +22,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 from dotenv import load_dotenv
 load_dotenv()  # automatically finds .env in current working directory
@@ -70,13 +71,13 @@ def get_bars(symbol: str, timeframe: TimeFrame, limit: int = 400) -> pd.DataFram
     """
     # Pull enough history to compute the long SMA comfortably
     req = StockBarsRequest(
-        symbol_or_symbols=symbol,
-        timeframe=timeframe,
-        limit=limit,
-        # use the last ~90 days as a safe window (Alpaca ignores if limit satisfied)
-        start=(datetime.now(TZ_NY) - timedelta(days=90)),
-        end=datetime.now(TZ_NY),
-        adjustment="raw",
+    symbol_or_symbols=symbol,
+    timeframe=timeframe,
+    limit=limit,
+    start=(datetime.now(TZ_NY) - timedelta(days=90)),
+    end=datetime.now(TZ_NY),
+    adjustment="raw",
+    feed=DataFeed.IEX,
     )
     bars = data_client.get_stock_bars(req)
 
