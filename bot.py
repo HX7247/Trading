@@ -3,9 +3,9 @@ To run this bot, set the following environment variables in a `.env` file or you
 $env:APCA_API_KEY_ID="YOUR_KEY_ID"
 $env:APCA_API_SECRET_KEY="YOUR_SECRET_KEY"
 $env:APCA_BASE_URL="YOUR_ENDPOINT_URL"  # e.g. https://paper-api.alpaca.markets
+
 python bot.py
 """
-
 
 import os
 import time
@@ -224,7 +224,7 @@ def main_loop():
 
 
 if __name__ == "__main__":
-    # Quick sanity check for creds
+    # Quick sanity check for credentials
     acct = trading.get_account()
     mode = "PAPER" if "paper" in BASE_URL else "LIVE"
     log(f"Connected to Alpaca ({mode}). Equity: ${acct.equity}, Buying power: ${acct.buying_power}")
