@@ -68,8 +68,8 @@ def log(msg: str):
 def get_bars(symbol: str, timeframe: TimeFrame, limit: int = 400) -> pd.DataFrame:
     """
     Fetch recent bars into a pandas DataFrame with columns: ['timestamp', 'open', 'high', 'low', 'close', 'volume'].
+    Pull enough history to compute the long SMA comfortably
     """
-    # Pull enough history to compute the long SMA comfortably
     req = StockBarsRequest(
     symbol_or_symbols=symbol,
     timeframe=timeframe,
@@ -131,9 +131,7 @@ def compute_signals(df: pd.DataFrame, short_n: int, long_n: int):
 
 
 def get_position_qty(symbol: str) -> int:
-    """
-    Current position quantity (signed). 0 if flat.
-    """
+    # Current position quantity (signed). 0 if flat.
     try:
         pos = trading.get_open_position(symbol)
         return int(float(pos.qty))  # qty can be a string
@@ -142,9 +140,9 @@ def get_position_qty(symbol: str) -> int:
 
 
 def place_market_order(symbol: str, side: str, notional_usd: float = None, qty: int = None):
-    """
-    Send a market order using notional (dollar-based) or quantity.
-    """
+
+    # Send a market order using notional (dollar-based) or quantity.
+ 
     if notional_usd is None and qty is None:
         raise ValueError("Provide notional_usd or qty")
 
@@ -201,9 +199,7 @@ def sync_once():
 
 
 def market_is_open_now() -> bool:
-    """
-    Simple check using account clock; avoids trading outside market hours.
-    """
+    # Simple check using account clock; avoids trading outside market hours.
     clock = trading.get_clock()
     return bool(clock.is_open)
 
