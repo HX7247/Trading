@@ -15,7 +15,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# Alpaca SDK
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
