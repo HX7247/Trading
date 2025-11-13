@@ -2,7 +2,7 @@
 To run this bot, set the following environment variables in a `.env` file or your shell:
 $env:APCA_API_KEY_ID="YOUR_KEY_ID"
 $env:APCA_API_SECRET_KEY="YOUR_SECRET_KEY"
-$env:APCA_BASE_URL="YOUR_ENDPOINT_URL"  # e.g. https://paper-api.alpaca.markets
+$env:APCA_BASE_URL="YOUR_ENDPOINT_URL" e.g. https://paper-api.alpaca.markets
 
 python bot.py
 """
@@ -26,35 +26,156 @@ from alpaca.data.enums import DataFeed
 from dotenv import load_dotenv
 load_dotenv()  # automatically finds .env in current working directory
 
-
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_BASE_URL", "https://paper-api.alpaca.markets")
 
-SYMBOL = os.getenv("SYMBOL", "AAPL").upper()
-TIMEFRAME_STR = os.getenv("TIMEFRAME", "1Hour")
-SHORT_SMA = int(os.getenv("SHORT_SMA", 50))
-LONG_SMA = int(os.getenv("LONG_SMA", 200))
-DOLLARS_PER_TRADE = float(os.getenv("DOLLARS_PER_TRADE", 200))
-POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", 900))
+# basic validation
+if not API_KEY or not API_SECRET:
+    raise RuntimeError("APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in environment or .env")
 
-# Map timeframe string to alpaca TimeFrame
-TF_MAP = {
-    "Minute": TimeFrame.Minute,
-    "5Minute": TimeFrame(5, "Minute"),
-    "15Minute": TimeFrame(15, "Minute"),
-    "1Hour": TimeFrame.Hour,
-    "1Day": TimeFrame.Day,
-}
+# trim accidental whitespace/newlines
+API_KEY = API_KEY.strip()
+API_SECRET = API_SECRET.strip()
+BASE_URL = BASE_URL.strip()
+
+# normalize BASE_URL: remove trailing '/v2' or trailing slash so SDK builds correct endpoint
+if BASE_URL.endswith("/v2"):
+    BASE_URL = BASE_URL[:-3]
+BASE_URL = BASE_URL.rstrip("/")
+
+SYMBOL = os.getenv("SYMBOL", "AAPL").upper()
+
+# Force 5-minute timeframe regardless of environment variable
+TIMEFRAME_STR = "5Minute"
+
+# Build TF_MAP robustly for different alpaca-py versions
+try:
+    # preferred: TimeFrame exposes constants / supports multiplication
+    TF_MAP = {
+        "Minute": TimeFrame.Minute,
+        "5Minute": TimeFrame.Minute * 5,
+        "15Minute": TimeFrame.Minute * 15,
+        "1Hour": TimeFrame.Hour,
+        "1Day": TimeFrame.Day,
+    }
+except Exception:
+    # try to use TimeFrameUnit enum if available
+    try:
+        from alpaca.data.timeframe import TimeFrameUnit
+        TF_MAP = {
+            "Minute": TimeFrame(1, TimeFrameUnit.Minute),
+            "5Minute": TimeFrame(5, TimeFrameUnit.Minute),
+            "15Minute": TimeFrame(15, TimeFrameUnit.Minute),
+            "1Hour": TimeFrame(1, TimeFrameUnit.Hour),
+            "1Day": TimeFrame(1, TimeFrameUnit.Day),
+        }
+    except Exception:
+        # fallback using unit strings (last resort)
+        TF_MAP = {
+            "Minute": TimeFrame(1, "minute"),
+            "5Minute": TimeFrame(5, "minute"),
+            "15Minute": TimeFrame(15, "minute"),
+            "1Hour": TimeFrame(1, "hour"),
+            "1Day": TimeFrame(1, "day"),
+        }
 
 if TIMEFRAME_STR not in TF_MAP:
     raise ValueError(f"Unsupported TIMEFRAME '{TIMEFRAME_STR}'. Use one of: {list(TF_MAP.keys())}")
 
 TIMEFRAME = TF_MAP[TIMEFRAME_STR]
 
-# Alpaca clients
-trading = TradingClient(API_KEY, API_SECRET, paper="paper" in BASE_URL)
-data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
+# helper: ensure the TimeFrame unit is an enum-like object (avoid passing plain str unit)
+def _ensure_timeframe_enum(tf: TimeFrame) -> TimeFrame:
+    unit = getattr(tf, "unit", None)
+    # if unit already has 'value' it's likely an enum -> ok
+    if hasattr(unit, "value"):
+        return tf
+    # attempt to map common unit strings to TimeFrame constants / TimeFrameUnit
+    unit_str = str(unit).lower() if unit is not None else ""
+    try:
+        # prefer TimeFrame constants if available
+        if unit_str.startswith("minute"):
+            base = getattr(TimeFrame, "Minute", None)
+        elif unit_str.startswith("hour"):
+            base = getattr(TimeFrame, "Hour", None)
+        elif unit_str.startswith("day"):
+            base = getattr(TimeFrame, "Day", None)
+        else:
+            base = None
+        if base is not None:
+            return TimeFrame(tf.n, base)
+        # try TimeFrameUnit enum if present
+        from alpaca.data.timeframe import TimeFrameUnit
+        if unit_str.startswith("minute"):
+            return TimeFrame(tf.n, TimeFrameUnit.Minute)
+        if unit_str.startswith("hour"):
+            return TimeFrame(tf.n, TimeFrameUnit.Hour)
+        if unit_str.startswith("day"):
+            return TimeFrame(tf.n, TimeFrameUnit.Day)
+    except Exception:
+        pass
+    # as a last resort return original tf (may still fail inside client)
+    return tf
+
+
+# --- strategy / runtime parameters (provide sensible defaults via env) ---
+SHORT_SMA = int(os.getenv("SHORT_SMA", 50))
+LONG_SMA = int(os.getenv("LONG_SMA", 200))
+DOLLARS_PER_TRADE = float(os.getenv("DOLLARS_PER_TRADE", 200.0))
+POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", 300))  # default 5 minutes
+
+
+# Alpaca clients — some alpaca-py versions use `paper=` not `base_url`
+IS_PAPER = "paper" in BASE_URL.lower()
+
+# Try constructing TradingClient / data client robustly across alpaca-py versions
+trading = None
+data_client = None
+_last_exc = None
+
+# 1) prefer constructors that accept base_url (newer versions)
+try:
+    trading = TradingClient(API_KEY, API_SECRET, base_url=BASE_URL)
+    data_client = StockHistoricalDataClient(API_KEY, API_SECRET, base_url=BASE_URL)
+except TypeError as e:
+    _last_exc = e
+
+# 2) fallback to 'paper=' constructor
+if trading is None:
+    try:
+        trading = TradingClient(API_KEY, API_SECRET, paper=IS_PAPER)
+    except TypeError as e:
+        _last_exc = e
+
+# 3) final fallback: no extra kwargs
+if trading is None:
+    try:
+        trading = TradingClient(API_KEY, API_SECRET)
+    except Exception as e:
+        _last_exc = e
+
+# data client fallbacks
+if data_client is None:
+    try:
+        data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
+    except Exception as e:
+        _last_exc = e
+
+if trading is None or data_client is None:
+    raise RuntimeError(f"Failed to construct Alpaca clients. Last error: {_last_exc!r}")
+
+# quick auth check: call get_account and surface helpful message on auth failure
+try:
+    acct = trading.get_account()
+except Exception as e:
+    # mask keys when printing
+    def mask(k): return (k[:4] + "..." + k[-4:]) if k and len(k) > 8 else "<redacted>"
+    raise RuntimeError(
+        "Alpaca authentication failed. Check API key/secret and BASE_URL.\n"
+        f"Key: {mask(API_KEY)} Secret: {mask(API_SECRET)} BASE_URL: {BASE_URL}\n"
+        f"Underlying error: {e}"
+    ) from e
 
 TZ_NY = pytz.timezone("America/New_York")
 
@@ -69,16 +190,36 @@ def get_bars(symbol: str, timeframe: TimeFrame, limit: int = 400) -> pd.DataFram
     Fetch recent bars into a pandas DataFrame with columns: ['timestamp', 'open', 'high', 'low', 'close', 'volume'].
     Pull enough history to compute the long SMA comfortably
     """
+    # ensure timeframe is a TimeFrame instance (sometimes environment or callers pass a str)
+    if isinstance(timeframe, str):
+        if timeframe in TF_MAP:
+            tf = TF_MAP[timeframe]
+        else:
+            raise ValueError(f"Unknown timeframe string '{timeframe}'")
+    else:
+        tf = timeframe
+
+    # normalize to TimeFrame with enum-like unit to avoid "'str' object has no attribute 'value'" inside alpaca client
+    tf = _ensure_timeframe_enum(tf)
+
+    # debug: surface types to help identify 'str'. Remove or comment out if noisy.
+    log(f"get_bars: symbol={symbol} timeframe_type={type(tf)} limit={limit}")
+
     req = StockBarsRequest(
-    symbol_or_symbols=symbol,
-    timeframe=timeframe,
-    limit=limit,
-    start=(datetime.now(TZ_NY) - timedelta(days=90)),
-    end=datetime.now(TZ_NY),
-    adjustment="raw",
-    feed=DataFeed.IEX,
+        symbol_or_symbols=symbol,
+        timeframe=tf,
+        limit=limit,
+        start=(datetime.now(TZ_NY) - timedelta(days=90)),
+        end=datetime.now(TZ_NY),
+        adjustment="raw",
+        feed=DataFeed.IEX,
     )
-    bars = data_client.get_stock_bars(req)
+
+    try:
+        bars = data_client.get_stock_bars(req)
+    except Exception as e:
+        # Re-raise with contextual info to diagnose "'str' object has no attribute 'value'" errors
+        raise RuntimeError(f"failed to fetch bars (symbol={symbol}, timeframe={tf!r}): {e}") from e
 
     if symbol not in bars.data:
         raise RuntimeError(f"No bar data returned for {symbol}")
