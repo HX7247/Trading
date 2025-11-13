@@ -43,7 +43,7 @@ def fetch_stock_data(ticker):
         return None
     
     # Get the last 10 years or all available data
-    ten_years_ago = datetime.now() - timedelta(days=365*10)
+    ten_years_ago = datetime.now(hist.index.tz) - timedelta(days=365*10)
     hist = hist[hist.index >= ten_years_ago]
     
     print(f"Data fetched: {len(hist)} trading days from {hist.index[0].date()} to {hist.index[-1].date()}")
@@ -62,6 +62,12 @@ def prepare_data(hist):
 def fit_polynomials(x, y):
     # Fit polynomials of order 1-9 to the data
     fits = {}
+    chi_squared_dof = {}
+    n = len(x)
+    
+    print("\nFitting polynomials...")
+    print("-" * 50)
+    
     for order in range(1, 10):
         coeffs = np.polyfit(x, y, order)
         poly = np.poly1d(coeffs)
@@ -73,9 +79,16 @@ def fit_polynomials(x, y):
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         r_squared = 1 - (ss_res / ss_tot)
         
-        print(f"Order {order}: R² = {r_squared:.6f}")
+        # Calculate chi-squared per degree of freedom
+        # DOF = n - (order + 1) where order+1 is number of parameters
+        dof = n - (order + 1)
+        chi_squared = ss_res / dof
+        chi_squared_dof[order] = chi_squared
+        
+        print(f"Order {order}: R² = {r_squared:.6f}, χ²/DOF = {chi_squared:.6f}")
     
-    return fits
+    print("-" * 50)
+    return fits, chi_squared_dof
 
 def forecast_polynomials(fits, current_x, future_days=365*10):
     # Forecast future prices using fitted polynomials
@@ -87,31 +100,57 @@ def forecast_polynomials(fits, current_x, future_days=365*10):
     
     return future_x, forecasts
 
-def plot_results(x, y, fits, future_x, forecasts, ticker):
+def plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof):
     # Plot historical data and forecasts
-    fig, axes = plt.subplots(3, 3, figsize=(16, 12))
-    fig.suptitle(f'{ticker} - Polynomial Forecasting (Orders 1-9)', fontsize=16)
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(3, 3, hspace=0.25, wspace=0.5, top=0.92, bottom=0.08)
     
-    axes = axes.flatten()
+    # Add main title
+    fig.suptitle(f'{ticker} - Polynomial Forecasting (Orders 1-9)', fontsize=11, fontweight='bold')
     
+    # Plot polynomial fits (9 subplots)
     for idx, order in enumerate(range(1, 10)):
-        ax = axes[idx]
+        ax = fig.add_subplot(gs[idx // 3, idx % 3])
         
         # Plot historical data
-        ax.scatter(x, y, alpha=0.3, s=10, label='Historical Data', color='blue')
+        ax.scatter(x, y, alpha=0.3, s=3, label='Historical Data', color='blue')
         
         # Plot fitted polynomial
         y_fit = fits[order](x)
-        ax.plot(x, y_fit, 'g-', linewidth=2, label='Fit')
+        ax.plot(x, y_fit, 'g-', linewidth=1, label='Fit')
         
         # Plot forecast
-        ax.plot(future_x, forecasts[order], 'r--', linewidth=2, label='Forecast')
+        ax.plot(future_x, forecasts[order], 'r--', linewidth=1, label='Forecast')
         
-        ax.set_title(f'Order {order}')
-        ax.set_xlabel('Days')
-        ax.set_ylabel('Price ($)')
-        ax.legend()
+        ax.set_title(f'Order {order}', fontsize=7)
+        ax.set_xlabel('Days', fontsize=6)
+        ax.set_ylabel('Price', fontsize=6)
+        ax.legend(fontsize=5)
         ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=5)
+    
+    plt.show()
+    
+    # Plot chi-squared per DOF on separate page
+    fig_chi = plt.figure(figsize=(10, 6))
+    ax_chi = fig_chi.add_subplot(111)
+    
+    orders = list(chi_squared_dof.keys())
+    chi_values = list(chi_squared_dof.values())
+    
+    ax_chi.plot(orders, chi_values, 'bo-', linewidth=2, markersize=8, markerfacecolor='lightblue', markeredgewidth=2)
+    ax_chi.set_xlabel('Polynomial Order', fontsize=10, fontweight='bold')
+    ax_chi.set_ylabel('χ²/DOF', fontsize=10, fontweight='bold')
+    ax_chi.set_title(f'{ticker} - Goodness of Fit: χ²/DOF vs Polynomial Order', fontsize=12, fontweight='bold')
+    ax_chi.grid(True, alpha=0.3)
+    ax_chi.set_xticks(orders)
+    ax_chi.tick_params(labelsize=8)
+    
+    # Find and mark the minimum
+    min_order = min(chi_squared_dof, key=chi_squared_dof.get)
+    min_chi = chi_squared_dof[min_order]
+    ax_chi.plot(min_order, min_chi, 'r*', markersize=20, label=f'Best Fit (Order {min_order})', zorder=5)
+    ax_chi.legend(fontsize=10)
     
     plt.tight_layout()
     plt.show()
@@ -135,7 +174,7 @@ def main():
     
     # Fit polynomials
     print(f"\nFitting polynomials to {ticker} data...")
-    fits = fit_polynomials(x, y)
+    fits, chi_squared_dof = fit_polynomials(x, y)
     
     # Forecast future prices
     print(f"\nForecasting next 10 years...")
@@ -143,7 +182,7 @@ def main():
     
     # Plot results
     print("\nGenerating plots...")
-    plot_results(x, y, fits, future_x, forecasts, ticker)
+    plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof)
     
     print("\nDone!")
 
