@@ -78,7 +78,7 @@ def fit_polynomials(x, y):
         y_pred = poly(x)
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot)1
+        r_squared = 1 - (ss_res / ss_tot)
         
         # Calculate chi-squared per degree of freedom
         # DOF = n - (order + 1) where order+1 is number of parameters
