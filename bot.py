@@ -44,7 +44,8 @@ if BASE_URL.endswith("/v2"):
     BASE_URL = BASE_URL[:-3]
 BASE_URL = BASE_URL.rstrip("/")
 
-SYMBOL = os.getenv("SYMBOL", "AAPL").upper()
+# List of symbols to trade
+SYMBOLS = ["NVDA", "TSLA", "META", "PLTR"]
 
 # Force 5-minute timeframe regardless of environment variable
 TIMEFRAME_STR = "5Minute"
@@ -120,8 +121,8 @@ def _ensure_timeframe_enum(tf: TimeFrame) -> TimeFrame:
 
 
 # --- strategy / runtime parameters (provide sensible defaults via env) ---
-SHORT_SMA = int(os.getenv("SHORT_SMA", 50))
-LONG_SMA = int(os.getenv("LONG_SMA", 200))
+SHORT_EMA = 9
+LONG_EMA = 21
 DOLLARS_PER_TRADE = float(os.getenv("DOLLARS_PER_TRADE", 200.0))
 POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", 300))  # default 5 minutes
 
@@ -188,7 +189,7 @@ def log(msg: str):
 def get_bars(symbol: str, timeframe: TimeFrame, limit: int = 400) -> pd.DataFrame:
     """
     Fetch recent bars into a pandas DataFrame with columns: ['timestamp', 'open', 'high', 'low', 'close', 'volume'].
-    Pull enough history to compute the long SMA comfortably
+    Pull enough history to compute the EMA comfortably
     """
     # ensure timeframe is a TimeFrame instance (sometimes environment or callers pass a str)
     if isinstance(timeframe, str):
@@ -201,9 +202,6 @@ def get_bars(symbol: str, timeframe: TimeFrame, limit: int = 400) -> pd.DataFram
 
     # normalize to TimeFrame with enum-like unit to avoid "'str' object has no attribute 'value'" inside alpaca client
     tf = _ensure_timeframe_enum(tf)
-
-    # debug: surface types to help identify 'str'. Remove or comment out if noisy.
-    log(f"get_bars: symbol={symbol} timeframe_type={type(tf)} limit={limit}")
 
     req = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -239,29 +237,29 @@ def get_bars(symbol: str, timeframe: TimeFrame, limit: int = 400) -> pd.DataFram
     return df
 
 
-def compute_signals(df: pd.DataFrame, short_n: int, long_n: int):
+def compute_signals(df: pd.DataFrame, short_ema: int, long_ema: int):
     """
-    Compute SMA cross signals. Returns 'BUY', 'SELL', or None for hold.
+    Compute EMA cross signals. Returns 'BUY', 'SELL', or None for hold.
     Signal triggers *only when a crossover happens* on the most recent bar.
     """
-    if len(df) < max(short_n, long_n) + 2:
+    if len(df) < max(short_ema, long_ema) + 2:
         return None
 
-    df["sma_short"] = df["close"].rolling(short_n).mean()
-    df["sma_long"] = df["close"].rolling(long_n).mean()
+    df["ema_short"] = df["close"].ewm(span=short_ema, adjust=False).mean()
+    df["ema_long"] = df["close"].ewm(span=long_ema, adjust=False).mean()
 
     # Use last two points to detect fresh cross
-    s_prev = df["sma_short"].iloc[-2]
-    l_prev = df["sma_long"].iloc[-2]
-    s_now = df["sma_short"].iloc[-1]
-    l_now = df["sma_long"].iloc[-1]
+    e_short_prev = df["ema_short"].iloc[-2]
+    e_long_prev = df["ema_long"].iloc[-2]
+    e_short_now = df["ema_short"].iloc[-1]
+    e_long_now = df["ema_long"].iloc[-1]
 
-    # Require both SMAs to be valid
-    if any(math.isnan(x) for x in [s_prev, l_prev, s_now, l_now]):
+    # Require both EMAs to be valid
+    if any(math.isnan(x) for x in [e_short_prev, e_long_prev, e_short_now, e_long_now]):
         return None
 
-    crossed_up = s_prev <= l_prev and s_now > l_now
-    crossed_down = s_prev >= l_prev and s_now < l_now
+    crossed_up = e_short_prev <= e_long_prev and e_short_now > e_long_now
+    crossed_down = e_short_prev >= e_long_prev and e_short_now < e_long_now
 
     if crossed_up:
         return "BUY"
@@ -310,32 +308,42 @@ def place_market_order(symbol: str, side: str, notional_usd: float = None, qty: 
     return order
 
 
+def sync_once_symbol(symbol: str):
+    """Process a single symbol for trading signals"""
+    try:
+        log(f"Fetching bars for {symbol} @ {TIMEFRAME_STR} ...")
+        df = get_bars(symbol, TIMEFRAME)
+        px = df["close"].iloc[-1]
+        signal = compute_signals(df, SHORT_EMA, LONG_EMA)
+        pos_qty = get_position_qty(symbol)
+
+        log(f"{symbol} | Last close: {px:.2f} | EMA{SHORT_EMA}={df['ema_short'].iloc[-1]:.2f} "
+            f"| EMA{LONG_EMA}={df['ema_long'].iloc[-1]:.2f} | Position={pos_qty} shares")
+
+        if signal == "BUY":
+            if pos_qty <= 0:
+                log(f"{symbol}: Signal=BUY (9 EMA crossed above 21 EMA) → placing market buy for ~${DOLLARS_PER_TRADE:.2f}")
+                order = place_market_order(symbol, "buy", notional_usd=DOLLARS_PER_TRADE)
+                log(f"{symbol}: Buy submitted: id={order.id} status={order.status}")
+            else:
+                log(f"{symbol}: Signal=BUY but already long; holding.")
+        elif signal == "SELL":
+            if pos_qty > 0:
+                log(f"{symbol}: Signal=SELL (9 EMA crossed below 21 EMA) → closing long position ({pos_qty} shares)")
+                order = place_market_order(symbol, "sell", qty=pos_qty)
+                log(f"{symbol}: Sell submitted: id={order.id} status={order.status}")
+            else:
+                log(f"{symbol}: Signal=SELL but not long; holding.")
+        else:
+            log(f"{symbol}: No new signal; holding.")
+    except Exception as e:
+        log(f"{symbol}: ERROR: {e}")
+
+
 def sync_once():
-    log(f"Fetching bars for {SYMBOL} @ {TIMEFRAME_STR} ...")
-    df = get_bars(SYMBOL, TIMEFRAME)
-    px = df["close"].iloc[-1]
-    signal = compute_signals(df, SHORT_SMA, LONG_SMA)
-    pos_qty = get_position_qty(SYMBOL)
-
-    log(f"Last close: {px:.2f} | SMA{SHORT_SMA}={df['sma_short'].iloc[-1]:.2f} "
-        f"| SMA{LONG_SMA}={df['sma_long'].iloc[-1]:.2f} | Position={pos_qty} shares")
-
-    if signal == "BUY":
-        if pos_qty <= 0:
-            log(f"Signal=BUY → placing market buy for ~${DOLLARS_PER_TRADE:.2f}")
-            order = place_market_order(SYMBOL, "buy", notional_usd=DOLLARS_PER_TRADE)
-            log(f"Buy submitted: id={order.id} status={order.status}")
-        else:
-            log("Signal=BUY but already long; holding.")
-    elif signal == "SELL":
-        if pos_qty > 0:
-            log(f"Signal=SELL → closing long position ({pos_qty} shares)")
-            order = place_market_order(SYMBOL, "sell", qty=pos_qty)
-            log(f"Sell submitted: id={order.id} status={order.status}")
-        else:
-            log("Signal=SELL but not long; holding.")
-    else:
-        log("No new signal; holding.")
+    """Process all symbols"""
+    for symbol in SYMBOLS:
+        sync_once_symbol(symbol)
 
 
 def market_is_open_now() -> bool:
@@ -345,8 +353,8 @@ def market_is_open_now() -> bool:
 
 
 def main_loop():
-    log("Starting SMA crossover bot (paper) ...")
-    log(f"Symbol={SYMBOL} | TF={TIMEFRAME_STR} | ShortSMA={SHORT_SMA} | LongSMA={LONG_SMA}")
+    log("Starting 9/21 EMA crossover bot (paper) ...")
+    log(f"Symbols={', '.join(SYMBOLS)} | TF={TIMEFRAME_STR} | ShortEMA={SHORT_EMA} | LongEMA={LONG_EMA}")
     while True:
         try:
             if market_is_open_now():
@@ -355,7 +363,7 @@ def main_loop():
                 log("Market closed; skipping.")
 
         except Exception as e:
-            log(f"ERROR: {e}")
+            log(f"FATAL ERROR: {e}")
 
         time.sleep(POLL_INTERVAL_SEC)
 
