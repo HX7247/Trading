@@ -63,10 +63,11 @@ def fit_polynomials(x, y):
     # Fit polynomials of order 1-9 to the data
     fits = {}
     chi_squared_dof = {}
+    bic_scores = {}
     n = len(x)
     
     print("\nFitting polynomials...")
-    print("-" * 50)
+    print("-" * 70)
     
     for order in range(1, 10):
         coeffs = np.polyfit(x, y, order)
@@ -77,7 +78,7 @@ def fit_polynomials(x, y):
         y_pred = poly(x)
         ss_res = np.sum((y - y_pred) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot)
+        r_squared = 1 - (ss_res / ss_tot)1
         
         # Calculate chi-squared per degree of freedom
         # DOF = n - (order + 1) where order+1 is number of parameters
@@ -85,10 +86,17 @@ def fit_polynomials(x, y):
         chi_squared = ss_res / dof
         chi_squared_dof[order] = chi_squared
         
-        print(f"Order {order}: R² = {r_squared:.6f}, χ²/DOF = {chi_squared:.6f}")
+        # Calculate BIC (Bayesian Information Criterion)
+        # BIC = n*ln(SS_res/n) + k*ln(n)
+        # where k = order + 1 (number of parameters including intercept)
+        k = order + 1
+        bic = n * np.log(ss_res / n) + k * np.log(n)
+        bic_scores[order] = bic
+        
+        print(f"Order {order}: R² = {r_squared:.6f}, χ²/DOF = {chi_squared:.6f}, BIC = {bic:.2f}")
     
-    print("-" * 50)
-    return fits, chi_squared_dof
+    print("-" * 70)
+    return fits, chi_squared_dof, bic_scores
 
 def forecast_polynomials(fits, current_x, future_days=365*10):
     # Forecast future prices using fitted polynomials
@@ -100,7 +108,7 @@ def forecast_polynomials(fits, current_x, future_days=365*10):
     
     return future_x, forecasts
 
-def plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof):
+def plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof, bic_scores):
     # Plot historical data and forecasts
     fig = plt.figure(figsize=(12, 8))
     gs = fig.add_gridspec(3, 3, hspace=0.25, wspace=0.5, top=0.92, bottom=0.08)
@@ -131,34 +139,71 @@ def plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof):
     
     plt.show()
     
-    # Plot chi-squared per DOF on separate page
-    fig_chi = plt.figure(figsize=(10, 6))
-    ax_chi = fig_chi.add_subplot(111)
+    # Plot chi-squared per DOF and BIC on separate page
+    fig_metrics = plt.figure(figsize=(14, 6))
     
     orders = list(chi_squared_dof.keys())
     chi_values = list(chi_squared_dof.values())
+    bic_values = list(bic_scores.values())
     
-    ax_chi.plot(orders, chi_values, 'bo-', linewidth=2, markersize=8, markerfacecolor='lightblue', markeredgewidth=2)
-    ax_chi.set_xlabel('Polynomial Order', fontsize=10, fontweight='bold')
-    ax_chi.set_ylabel('χ²/DOF', fontsize=10, fontweight='bold')
-    ax_chi.set_title(f'{ticker} - Goodness of Fit: χ²/DOF vs Polynomial Order', fontsize=12, fontweight='bold')
-    ax_chi.grid(True, alpha=0.3)
-    ax_chi.set_xticks(orders)
-    ax_chi.tick_params(labelsize=8)
+    # Find best models
+    best_chi_order = min(chi_squared_dof, key=chi_squared_dof.get)
+    best_bic_order = min(bic_scores, key=bic_scores.get)
     
-    # Find and mark the minimum
-    min_order = min(chi_squared_dof, key=chi_squared_dof.get)
-    min_chi = chi_squared_dof[min_order]
-    ax_chi.plot(min_order, min_chi, 'r*', markersize=20, label=f'Best Fit (Order {min_order})', zorder=5)
-    ax_chi.legend(fontsize=10)
+    # Plot 1: Chi-squared per DOF
+    ax1 = fig_metrics.add_subplot(121)
+    ax1.plot(orders, chi_values, 'bo-', linewidth=2, markersize=8, markerfacecolor='lightblue', markeredgewidth=2)
+    ax1.plot(best_chi_order, chi_squared_dof[best_chi_order], 'r*', markersize=20, label=f'Best (Order {best_chi_order})', zorder=5)
+    ax1.set_xlabel('Polynomial Order', fontsize=10, fontweight='bold')
+    ax1.set_ylabel('χ²/DOF', fontsize=10, fontweight='bold')
+    ax1.set_title('χ² per Degree of Freedom vs Polynomial Order', fontsize=11, fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_xticks(orders)
+    ax1.tick_params(labelsize=8)
+    ax1.legend(fontsize=9)
     
+    # Plot 2: BIC
+    ax2 = fig_metrics.add_subplot(122)
+    ax2.plot(orders, bic_values, 'go-', linewidth=2, markersize=8, markerfacecolor='lightgreen', markeredgewidth=2)
+    ax2.plot(best_bic_order, bic_scores[best_bic_order], 'r*', markersize=20, label=f'Best (Order {best_bic_order})', zorder=5)
+    ax2.set_xlabel('Polynomial Order', fontsize=10, fontweight='bold')
+    ax2.set_ylabel('BIC', fontsize=10, fontweight='bold')
+    ax2.set_title('BIC vs Polynomial Order', fontsize=11, fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xticks(orders)
+    ax2.tick_params(labelsize=8)
+    ax2.legend(fontsize=9)
+    
+    plt.suptitle(f'{ticker} - Model Selection Metrics', fontsize=12, fontweight='bold', y=1.00)
     plt.tight_layout()
     plt.show()
+    
+    # Summary analysis
+    print("\n" + "="*70)
+    print("MODEL COMPARISON ANALYSIS")
+    print("="*70)
+    print(f"\nBest model by χ²/DOF: Order {best_chi_order}")
+    print(f"  χ²/DOF = {chi_squared_dof[best_chi_order]:.6f}")
+    print(f"\nBest model by BIC: Order {best_bic_order}")
+    print(f"  BIC = {bic_scores[best_bic_order]:.2f}")
+    print(f"\nComparison:")
+    print(f"  χ²/DOF penalizes goodness-of-fit without model complexity penalty")
+    print(f"  BIC penalizes both residual error AND model complexity (order)")
+    print(f"  Lower BIC → better balance between fit quality and simplicity")
+    print(f"  Lower χ²/DOF → better fit but may overfit with higher orders")
+    
+    if best_bic_order == best_chi_order:
+        print(f"\n✓ Both metrics agree: Order {best_bic_order} is optimal")
+    else:
+        print(f"\n⚠ Metrics disagree: BIC prefers Order {best_bic_order} (simpler), χ²/DOF prefers Order {best_chi_order}")
+    
+    print("="*70 + "\n")
 
 def main():
     # Main program flow
     print("\n" + "="*50)
     print("Stock Price Forecasting with Polynomial Models")
+    print("Fitting & Forecasting Activity: 3 Model Testing")
     print("="*50)
     
     # Get user's ticker choice
@@ -174,7 +219,7 @@ def main():
     
     # Fit polynomials
     print(f"\nFitting polynomials to {ticker} data...")
-    fits, chi_squared_dof = fit_polynomials(x, y)
+    fits, chi_squared_dof, bic_scores = fit_polynomials(x, y)
     
     # Forecast future prices
     print(f"\nForecasting next 10 years...")
@@ -182,9 +227,9 @@ def main():
     
     # Plot results
     print("\nGenerating plots...")
-    plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof)
+    plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof, bic_scores)
     
-    print("\nDone!")
+    print("Done!")
 
 if __name__ == "__main__":
     main()
