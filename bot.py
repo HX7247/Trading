@@ -1,10 +1,6 @@
 """
-To run this bot, set the following environment variables in a `.env` file or your shell:
-$env:APCA_API_KEY_ID="YOUR_KEY_ID"
-$env:APCA_API_SECRET_KEY="YOUR_SECRET_KEY"
-$env:APCA_BASE_URL="YOUR_ENDPOINT_URL" e.g. https://paper-api.alpaca.markets
-
-python bot.py
+TO RUN: pip install alpaca-py pandas numpy python-dotenv pytz
+Make Sure to configure the .env file with your Alpaca API credentials
 """
 
 import os
@@ -278,7 +274,6 @@ def get_position_qty(symbol: str) -> int:
 
 
 def place_market_order(symbol: str, side: str, notional_usd: float = None, qty: int = None):
-
     # Send a market order using notional (dollar-based) or quantity.
  
     if notional_usd is None and qty is None:
@@ -308,6 +303,55 @@ def place_market_order(symbol: str, side: str, notional_usd: float = None, qty: 
     return order
 
 
+def place_bracket_order(symbol: str, entry_price: float, qty: float):
+    """
+    Place a bracket order (buy + stop loss + take profit as a single order).
+    Risk 2% of account equity with 8% stop loss and 2x TP.
+    """
+    try:
+        # Get current account equity
+        acct = trading.get_account()
+        account_equity = float(acct.equity)
+        
+        # Calculate position size based on 2% account risk
+        stop_loss_pct = 0.08  # 8% stop loss
+        risk_amount = account_equity * 0.02  # 2% of account
+        
+        # qty = risk_amount / (entry_price * stop_loss_pct)
+        position_qty = risk_amount / (entry_price * stop_loss_pct)
+        
+        # Calculate stop loss and take profit prices
+        stop_loss_price = entry_price * (1 - stop_loss_pct)  # 8% below entry
+        stop_distance = entry_price - stop_loss_price
+        take_profit_price = entry_price + (stop_distance * 2)  # 2x the stop loss distance
+        
+        log(f"{symbol}: Placing bracket order | Entry: ${entry_price:.2f} | Qty: {position_qty:.4f}")
+        log(f"{symbol}: Stop Loss: ${stop_loss_price:.2f} (8% below) | Take Profit: ${take_profit_price:.2f} (2x SL)")
+        log(f"{symbol}: Risk Amount: ${risk_amount:.2f} (2% of ${account_equity:.2f})")
+        
+        # Import bracket order request
+        from alpaca.trading.requests import BracketOrderRequest
+        
+        # Create bracket order (entry + stop loss + take profit)
+        bracket_order = BracketOrderRequest(
+            symbol=symbol,
+            qty=round(position_qty, 4),
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            take_profit={"limit_price": round(take_profit_price, 2)},
+            stop_loss={"stop_price": round(stop_loss_price, 2)},
+        )
+        
+        order = trading.submit_order(bracket_order)
+        log(f"{symbol}: Bracket order submitted: id={order.id} status={order.status}")
+        
+        return order
+        
+    except Exception as e:
+        log(f"{symbol}: ERROR placing bracket order: {e}")
+        raise
+
+
 def sync_once_symbol(symbol: str):
     """Process a single symbol for trading signals"""
     try:
@@ -322,9 +366,8 @@ def sync_once_symbol(symbol: str):
 
         if signal == "BUY":
             if pos_qty <= 0:
-                log(f"{symbol}: Signal=BUY (9 EMA crossed above 21 EMA) → placing market buy for ~${DOLLARS_PER_TRADE:.2f}")
-                order = place_market_order(symbol, "buy", notional_usd=DOLLARS_PER_TRADE)
-                log(f"{symbol}: Buy submitted: id={order.id} status={order.status}")
+                log(f"{symbol}: Signal=BUY (9 EMA crossed above 21 EMA)")
+                place_bracket_order(symbol, px, qty=1)  # qty will be calculated in bracket_order
             else:
                 log(f"{symbol}: Signal=BUY but already long; holding.")
         elif signal == "SELL":
