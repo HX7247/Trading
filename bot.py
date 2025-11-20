@@ -306,7 +306,7 @@ def place_market_order(symbol: str, side: str, notional_usd: float = None, qty: 
 def place_bracket_order(symbol: str, entry_price: float, qty: float):
     """
     Place a bracket order (buy + stop loss + take profit as a single order).
-    Risk 2% of account equity with 8% stop loss and 2x TP.
+    Risk 2% of account equity with 1% stop loss and 2% take profit.
     """
     try:
         # Get current account equity
@@ -314,19 +314,18 @@ def place_bracket_order(symbol: str, entry_price: float, qty: float):
         account_equity = float(acct.equity)
         
         # Calculate position size based on 2% account risk
-        stop_loss_pct = 0.08  # 8% stop loss
+        stop_loss_pct = 0.01  # 1% stop loss
         risk_amount = account_equity * 0.02  # 2% of account
         
         # qty = risk_amount / (entry_price * stop_loss_pct)
         position_qty = risk_amount / (entry_price * stop_loss_pct)
         
         # Calculate stop loss and take profit prices
-        stop_loss_price = entry_price * (1 - stop_loss_pct)  # 8% below entry
-        stop_distance = entry_price - stop_loss_price
-        take_profit_price = entry_price + (stop_distance * 2)  # 2x the stop loss distance
+        stop_loss_price = entry_price * (1 - stop_loss_pct)  # 1% below entry
+        take_profit_price = entry_price * (1 + 0.02)  # 2% above entry
         
         log(f"{symbol}: Placing bracket order | Entry: ${entry_price:.2f} | Qty: {position_qty:.4f}")
-        log(f"{symbol}: Stop Loss: ${stop_loss_price:.2f} (8% below) | Take Profit: ${take_profit_price:.2f} (2x SL)")
+        log(f"{symbol}: Stop Loss: ${stop_loss_price:.2f} (1% below) | Take Profit: ${take_profit_price:.2f} (2% above)")
         log(f"{symbol}: Risk Amount: ${risk_amount:.2f} (2% of ${account_equity:.2f})")
         
         # Import bracket order request
