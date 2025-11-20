@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
 from numpy.polynomial import polynomial as P
+import numpy.linalg as la
 
 # Array of stock tickers to choose from
 STOCK_TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ']
@@ -58,6 +59,212 @@ def prepare_data(hist):
     days = np.arange(len(prices))
     
     return days, prices
+
+def _fit_polynomial_with_cov(x, y, degree):
+    """
+    Fit polynomial on scaled x, return coeffs (lowest->highest), cov matrix, ss_res, dof.
+    Uses linear least squares with design matrix and computes parameter covariance:
+      cov = sigma2 * (A^T A)^{-1},  sigma2 = ss_res / (n - p)
+    x is 1D array of sample indices (e.g. days). We scale x to improve conditioning.
+    """
+    n = len(x)
+    p = degree + 1
+
+    # scale x
+    x0 = x.mean()
+    sx = x.std() if x.std() != 0 else 1.0
+    x_s = (x - x0) / sx
+
+    # design matrix: columns [1, x, x^2, ..., x^d]
+    A = np.column_stack([x_s**k for k in range(p)])  # shape (n, p)
+
+    # least squares
+    coeffs, residuals, rank, svals = la.lstsq(A, y, rcond=None)
+    y_pred = A.dot(coeffs)
+    ss_res = float(np.sum((y - y_pred) ** 2))
+
+    dof = n - p
+    if dof <= 0:
+        sigma2 = np.nan
+        cov = np.full((p, p), np.nan)
+    else:
+        sigma2 = ss_res / dof
+        # compute (A^T A)^{-1}
+        ATA_inv = la.inv(A.T.dot(A))
+        cov = sigma2 * ATA_inv
+
+    # return coeffs (a0 + a1 x + ...), cov, scaling params, metrics
+    return {
+        "degree": degree,
+        "coeffs": coeffs,                 # a0..ad for scaled x
+        "cov": cov,                       # covariance matrix of coeffs
+        "x0": x0,
+        "sx": sx,
+        "ss_res": ss_res,
+        "dof": dof,
+        "sigma2": sigma2,
+        "n": n,
+        "p": p
+    }
+
+def _poly_eval(fit, x_new):
+    """Evaluate polynomial fit dict on raw x_new values (unscaled)."""
+    x_s = (x_new - fit["x0"]) / fit["sx"]
+    powers = np.column_stack([x_s**k for k in range(fit["p"])])
+    return powers.dot(fit["coeffs"])
+
+def fit_polynomials_with_stats(x, y, max_order=9):
+    """
+    Replace previous fit_polynomials: returns dict of fits keyed by order and computed BIC, chi2/dof.
+    """
+    fits = {}
+    chi2_dof = {}
+    bic = {}
+
+    for order in range(1, max_order + 1):
+        res = _fit_polynomial_with_cov(x, y, order)
+        fits[order] = res
+
+        ss_res = res["ss_res"]
+        n = res["n"]
+        p = res["p"]
+        dof = res["dof"]
+
+        chi2_per_dof = ss_res / dof if dof > 0 else np.nan
+        chi2_dof[order] = chi2_per_dof
+
+        # BIC = n * ln(SS_res/n) + k * ln(n), where k = p
+        bic_val = n * np.log(ss_res / n) + p * np.log(n)
+        bic[order] = bic_val
+
+    return fits, chi2_dof, bic
+
+def fit_exponential(x, y):
+    """
+    Fit y = A * exp(b * x_s) by linearizing: ln(y) = ln(A) + b * x_s
+    Returns params {A, b}, covariance matrix for [A, b], ss_res (on original y), BIC, chi2/dof.
+    Requires y > 0 for log transform.
+    """
+    mask = y > 0
+    if mask.sum() < 3:
+        raise RuntimeError("Not enough positive y values for exponential fit")
+
+    x_pos = x[mask]
+    y_pos = y[mask]
+
+    # scale x same way as polynomial fits
+    x0 = x_pos.mean()
+    sx = x_pos.std() if x_pos.std() != 0 else 1.0
+    x_s = (x_pos - x0) / sx
+
+    # design for linear regression on log(y)
+    A = np.column_stack([np.ones_like(x_s), x_s])  # [1, x_s]
+    ly = np.log(y_pos)
+
+    coeffs_lin, residuals, rank, svals = la.lstsq(A, ly, rcond=None)
+    lnA, b = coeffs_lin
+    y_pred = np.exp(lnA + b * x_s)
+    ss_res = float(np.sum((y_pos - y_pred) ** 2))
+
+    n = len(y_pos)
+    p = 2
+    dof = n - p
+    sigma2 = ss_res / dof if dof > 0 else np.nan
+
+    # covariance in log-space: cov_ln = sigma2_log * (A^T A)^{-1}
+    # but we computed residuals in original space; to approximate covariance of lnA and b,
+    # we instead compute covariance from linear regression on ln(y):
+    ly_pred = A.dot(coeffs_lin)
+    ss_res_log = float(np.sum((ly - ly_pred) ** 2))
+    sigma2_log = ss_res_log / (n - p) if n - p > 0 else np.nan
+    ATA_inv = la.inv(A.T.dot(A))
+    cov_ln = sigma2_log * ATA_inv  # covariance of [lnA, b]
+
+    # transform covariance to [A, b] using delta method
+    A_param = np.exp(lnA)
+    # var(A) ≈ (dA/dlnA)^2 var(lnA) = A^2 * var(lnA)
+    var_A = (A_param**2) * cov_ln[0, 0]
+    cov_Ab = A_param * cov_ln[0, 1]  # cov(A, b) ≈ A * cov(lnA, b)
+    cov_mat = np.array([[var_A, cov_Ab], [cov_Ab, cov_ln[1, 1]]])
+
+    # BIC using ss_res on original y
+    bic = n * np.log(ss_res / n) + p * np.log(n) if ss_res > 0 else np.nan
+    chi2dof = ss_res / dof if dof > 0 else np.nan
+
+    return {
+        "A": A_param,
+        "b": b,
+        "cov": cov_mat,
+        "ss_res": ss_res,
+        "n": n,
+        "p": p,
+        "dof": dof,
+        "chi2dof": chi2dof,
+        "bic": bic,
+        "x0": x0,
+        "sx": sx
+    }
+
+def analyze_and_report(x, y, fits_dict, chi2_dof, bic_scores):
+    """
+    For the best model by BIC: print parameter values, covariance matrix, uncertainties.
+    Also fit exponential model and compare metrics (chi2/DOF and BIC).
+    """
+    # choose best polynomial by BIC
+    best_poly = min(bic_scores, key=bic_scores.get)
+    poly_fit = fits_dict[best_poly]
+
+    coeffs = poly_fit["coeffs"]
+    cov = poly_fit["cov"]
+    p = poly_fit["p"]
+
+    # parameter uncertainties (std dev)
+    uncert = np.sqrt(np.diag(cov)) if cov is not None else np.full(p, np.nan)
+
+    print("\n" + "="*60)
+    print(f"BEST POLYNOMIAL MODEL: degree = {best_poly}")
+    print("-" * 60)
+    for i, (c, u) in enumerate(zip(coeffs, uncert)):
+        print(f"coeff a{i:02d} (x^{i}): {c:.6e} ± {u:.6e}")
+    print("\nCovariance matrix (rows/cols correspond to a0..a{d}):")
+    with np.printoptions(precision=4, suppress=True):
+        print(cov)
+    print(f"\nχ²/DOF = {chi2_dof[best_poly]:.6e}")
+    print(f"BIC      = {bic_scores[best_poly]:.6e}")
+    print("="*60)
+
+    # Exponential fit
+    try:
+        exp_res = fit_exponential(x, y)
+        print("\nExponential model fit: y = A * exp(b * x_s)")
+        print(f" A = {exp_res['A']:.6e} ± {np.sqrt(exp_res['cov'][0,0]):.6e}")
+        print(f" b = {exp_res['b']:.6e} ± {np.sqrt(exp_res['cov'][1,1]):.6e}")
+        print("\nCovariance matrix for [A, b]:")
+        with np.printoptions(precision=4, suppress=True):
+            print(exp_res["cov"])
+        print(f"\nExponential χ²/DOF = {exp_res['chi2dof']:.6e}")
+        print(f"Exponential BIC    = {exp_res['bic']:.6e}")
+    except Exception as e:
+        print("\nExponential fit failed:", e)
+        exp_res = None
+
+    # Compare BIC and χ²/DOF
+    print("\n" + "="*60)
+    print("MODEL COMPARISON SUMMARY")
+    print("-" * 60)
+    print(f"Polynomial (degree {best_poly}): χ²/DOF = {chi2_dof[best_poly]:.6e}, BIC = {bic_scores[best_poly]:.6e}")
+    if exp_res:
+        print(f"Exponential                : χ²/DOF = {exp_res['chi2dof']:.6e}, BIC = {exp_res['bic']:.6e}")
+        if exp_res['bic'] < bic_scores[best_poly]:
+            print("\n-> Exponential model has lower BIC (preferred by BIC).")
+        elif exp_res['bic'] > bic_scores[best_poly]:
+            print("\n-> Polynomial model has lower BIC (preferred by BIC).")
+        else:
+            print("\n-> BIC equal (tie).")
+    else:
+        print("Exponential model not available for comparison.")
+
+    print("="*60 + "\n")
 
 def fit_polynomials(x, y):
     # Fit polynomials of order 1-9 to the data
@@ -217,17 +424,24 @@ def main():
     # Prepare data
     x, y = prepare_data(hist)
     
-    # Fit polynomials
+    # Fit polynomials (with stats)
     print(f"\nFitting polynomials to {ticker} data...")
-    fits, chi_squared_dof, bic_scores = fit_polynomials(x, y)
+    fits, chi_squared_dof, bic_scores = fit_polynomials_with_stats(x, y, max_order=9)
     
-    # Forecast future prices
+    # Analyze best model and compare to exponential
+    analyze_and_report(x, y, fits, chi_squared_dof, bic_scores)
+    
+    # Forecast future prices using the fitted models
     print(f"\nForecasting next 10 years...")
-    future_x, forecasts = forecast_polynomials(fits, x)
+    # build callable evaluators from the fit dicts (use _poly_eval which handles scaling)
+    poly_callables = {k: (lambda xx, f=fits[k]: _poly_eval(f, xx)) for k in fits}
     
-    # Plot results
+    # get future_x and forecasts (forecast_polynomials expects callables)
+    future_x, forecasts = forecast_polynomials(poly_callables, x)
+    
+    # Plot results (pass the same callables as 'fits' so plotting uses them for y_fit)
     print("\nGenerating plots...")
-    plot_results(x, y, fits, future_x, forecasts, ticker, chi_squared_dof, bic_scores)
+    plot_results(x, y, poly_callables, future_x, forecasts, ticker, chi_squared_dof, bic_scores)
     
     print("Done!")
 
