@@ -116,7 +116,7 @@ def _ensure_timeframe_enum(tf: TimeFrame) -> TimeFrame:
     return tf
 
 
-# --- strategy / runtime parameters (provide sensible defaults via env) ---
+# Strategy / Runtime parameters (provide sensible defaults via env)
 SHORT_EMA = 9
 LONG_EMA = 21
 DOLLARS_PER_TRADE = float(os.getenv("DOLLARS_PER_TRADE", 200.0))

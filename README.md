@@ -1,9 +1,5 @@
 # Trading Projects — Overview
 
-This folder contains small trading / analysis projects you built and use. Brief summaries, how to run them, important files, and troubleshooting notes are below.
-
----
-
 ## Projects
 
 ### 1) Scalping Bot
