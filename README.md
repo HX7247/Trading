@@ -6,10 +6,10 @@
 - File: `bot.py`
 - Purpose: Real-time 9‑EMA / 21‑EMA crossover strategy on 5‑minute bars.
 - Features:
-  - Trades multiple symbols concurrently (default: NVDA, TSLA, META, PLTR).
-  - Places bracket orders (entry + stop loss + take profit).
+  - Trades multiple symbols concurrently.
+  - Places orders with stop loss and take profit.
   - Risk management: position sizing targets 2% of account equity.
-  - Stop loss: 1% below entry; Take profit: 2% above entry (configurable in code).
+  - Stop loss: 1% below entry; Take profit: 2% above entry.
   - Polls every 5 minutes and only trades when market is open.
 - Notes:
   - Uses Alpaca (alpaca-py) for data and trading.
