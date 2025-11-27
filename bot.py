@@ -339,7 +339,7 @@ def sync_once():
 
 
 def market_is_open_now() -> bool:
-    # Simple check using account clock; avoids trading outside market hours.
+    # Simple check using account clock; avoids trading outside NYSE market hours.
     clock = trading.get_clock()
     return bool(clock.is_open)
 
