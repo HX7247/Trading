@@ -29,7 +29,7 @@
 ## Important files
 - `bot.py` — trading bot (requires Alpaca credentials).
 - `stock_price_forecasting.py` — offline forecasting and model testing.
-- `.env` — environment variables (API keys, timeframe, EMA spans, risk settings).
+- `.env` — environment variables (API keys, timeframe, EMA lengths and risk settings).
 - `README.md` — this file.
 
 
